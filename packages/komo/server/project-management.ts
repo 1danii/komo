@@ -201,7 +201,7 @@ export async function manageProject(
       threads:
         "SELECT id,repo,branch,page,anchor,resolved,resolved_by,created_at,updated_at FROM threads WHERE project=? ORDER BY id",
       comments:
-        "SELECT c.* FROM comments c JOIN threads t ON t.id=c.thread_id WHERE t.project=? ORDER BY c.id",
+        "SELECT c.id,c.thread_id,c.user_id,c.body,c.created_at,c.edited_at FROM comments c JOIN threads t ON t.id=c.thread_id WHERE t.project=? ORDER BY c.id",
       reactions:
         "SELECT r.* FROM reactions r JOIN comments c ON c.id=r.comment_id JOIN threads t ON t.id=c.thread_id WHERE t.project=? ORDER BY r.comment_id,r.user_id,r.emoji",
       users:

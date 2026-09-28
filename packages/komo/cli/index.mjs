@@ -79,6 +79,7 @@ async function protectLocalFiles() {
     ".komo/owner-key",
     ".komo/setup.json",
     ".komo/.dev.vars",
+    ".komo/node.env",
     ".komo/.wrangler/",
     "komo.config.js",
   ].filter((line) => !existing.split("\n").includes(line));
@@ -167,6 +168,8 @@ async function init() {
   };
   try {
     const selfHosted = args.includes("--self-host");
+    const nodeHosted = args.includes("--node");
+    if (selfHosted && nodeHosted) throw Error("Choose --node or --self-host.");
     const detected = repository(gitValue(["remote", "get-url", "origin"], cwd));
     const project = `komo_${randomUUID().replaceAll("-", "")}`;
     const repo =
@@ -204,7 +207,7 @@ async function init() {
         ? previous.scope
         : "project";
     let config;
-    if (!selfHosted) {
+    if (!selfHosted && !nodeHosted) {
       const endpoint =
         flag("--endpoint") ||
         (resuming ? previous.endpoint : "") ||
@@ -266,6 +269,48 @@ async function init() {
       if (!config)
         throw Error("Sign-in timed out. Run komo init again to resume setup.");
       await rm(setupPath, { force: true });
+    } else if (nodeHosted) {
+      const endpoint = flag("--endpoint") || (await ask("Public API URL"));
+      const api = new URL(endpoint);
+      if (
+        api.origin !== endpoint ||
+        (api.protocol !== "https:" &&
+          !["localhost", "127.0.0.1"].includes(api.hostname))
+      ) throw Error("Use an HTTPS API origin, or localhost.");
+      const previewOrigin = flag("--preview-origin");
+      if (previewOrigin &&
+        !/^https:\/\/[a-z0-9-]*\*[a-z0-9-]*\.[a-z0-9.-]+$/.test(previewOrigin))
+        throw Error("Use a single-label HTTPS preview wildcard.");
+      const googleClient =
+        flag("--google-client-id") || (await ask("Google OAuth client ID"));
+      const key = randomBytes(32).toString("hex");
+      const dir = resolve(cwd, ".komo");
+      await mkdir(dir, { recursive: true });
+      await protectLocalFiles();
+      const projectConfig = {
+        repo,
+        origins: [...new Set([...origins, ...(previewOrigin ? [previewOrigin] : [])])],
+        requireOwner: true,
+        bootstrapHash: createHash("sha256").update(key).digest("hex"),
+      };
+      await writeFile(join(dir, "owner-key"), key, { mode: 0o600 });
+      await writeFile(join(dir, "node.env"), [
+        "DATABASE_URL=REPLACE_WITH_POSTGRES_URL",
+        `PUBLIC_URL=${endpoint}`,
+        `PROJECTS=${JSON.stringify({ [project]: projectConfig })}`,
+        `GOOGLE_CLIENT_ID=${googleClient}`,
+        "GOOGLE_CLIENT_SECRET=REPLACE_WITH_GOOGLE_SECRET",
+        "PORT=8080",
+        "",
+      ].join("\n"), { mode: 0o600 });
+      config = { endpoint, project, repo, scope, origin };
+      await writeFile(settingsPath, `${JSON.stringify(config, null, 2)}\n`);
+      await sync();
+      await installAgentWorkflow(cwd);
+      console.log(
+        `Edit .komo/node.env with your PostgreSQL URL and Google secret.\nDeploy the Node container with those variables.\nRegister ${endpoint}/auth/google/callback in Google Console.\nOpen ${endpoint}/setup?project=${project}#${key} to claim ownership after the API is live.\n`
+      );
+      return;
     } else {
       if (
         !(await exists(resolve(cwd, "node_modules/@tjcages/komo/package.json")))
@@ -338,7 +383,7 @@ async function init() {
 try {
   if (args.includes("--help") || !command)
     console.log(
-      `komo\n\n  komo init          Create a Google-owned hosted workspace\n  komo init --self-host  Deploy your own Worker and D1 database\n  komo deploy        Resume self-hosted deployment\n  komo sync          Regenerate client settings; detect the current branch\n\nOptions: --origin URL --endpoint API_URL --repo OWNER/REPO --branch-scope\nSelf-host: --google-client-id ID\n\nComments are shared across deployments unless --branch-scope is set.${
+      `komo\n\n  komo init          Create a Google-owned hosted workspace\n  komo init --self-host  Deploy your own Worker and D1 database\n  komo init --node       Prepare a Node/PostgreSQL project\n  komo deploy        Resume self-hosted deployment\n  komo sync          Regenerate client settings; detect the current branch\n\nOptions: --origin URL --endpoint API_URL --repo OWNER/REPO --branch-scope\nSelf-host: --google-client-id ID; Node: --preview-origin HTTPS_WILDCARD\n\nComments are shared across deployments unless --branch-scope is set.${
         agentHelp
       }`
     );

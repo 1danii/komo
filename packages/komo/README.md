@@ -66,7 +66,7 @@ export function Komo() {
 
 Render `<Komo />` in your app or layout. The hook handles mounting, cleanup, and React Strict Mode. Inline configuration objects are supported; unchanged values do not restart komo. Changing configuration remounts it, and `enabled: false` removes it. Memoize callback options with `useCallback` and pass stable DOM elements for `pageRoot` or `drawerContainer`. Mount only one hook per page; do not combine it with a separate `initKomo()` call. Server rendering does not mount the tool.
 
-The **endpoint is the comments API**, not your website or preview URL. Hosted komo defaults to `https://komo.offbr.co`. Google sign-in returns to `https://komo.offbr.co/auth/google/callback`, regardless of the website embedding komo. For self-hosting, pass the Worker URL as `endpoint`. Your current page comes from the browser. Setup detects repository metadata from Git; include its printed `repo` value to enrich agent prompts.
+The **endpoint is the comments API**, not your website or preview URL. Hosted komo defaults to `https://komo.offbr.co`. Google sign-in returns to `https://komo.offbr.co/auth/google/callback`, regardless of the website embedding komo. For self-hosting, pass your Worker or Node API URL as `endpoint`. Your current page comes from the browser. Setup detects repository metadata from Git; include its printed `repo` value to enrich agent prompts.
 
 Comments are shared across deployments by default. Use `pnpm exec komo init --branch-scope` to separate them by branch. For automatic branch detection, import from the optional generated `komo.config.js` helper and run `komo sync` before builds. It detects the current branch from deployment environment variables or Git; set `KOMO_BRANCH` if neither is available. It fails rather than silently grouping unknown branches.
 
@@ -76,7 +76,7 @@ Comments are shared across deployments by default. Use `pnpm exec komo init --br
 - Replies, reactions, author-only editing, resolution, and undo.
 - Searchable sidebar, draggable dock, and Google or guest profiles.
 - Copy open feedback with selectors, source paths, page URLs, replies, and geometry into an agent.
-- A separate Cloudflare Worker and D1 database, hosted or in your own account.
+- Hosted Cloudflare storage, or your own Worker/D1 or Node/PostgreSQL service.
 
 ## Agent CLI
 
@@ -197,6 +197,8 @@ Open the owner-claim link printed by setup and sign in with Google. The one-time
 If setup is interrupted, run `pnpm exec komo deploy` to resume the existing deployment. Do not rerun initialization to create another database. The generated `.komo/wrangler.json` supports explicit allowed preview domains and single-label wildcard origins. Only allow domains whose scripts you trust.
 
 Self-hosted storage belongs to your Cloudflare account; its service limits and charges apply. Use `komo deploy` for package migrations and `komo project export` for feedback backups. The hosted service and self-hosted installations use separate databases.
+
+For a Node container with PostgreSQL (including Cloud Run), use the [Node self-hosting guide](./NODE.md). It uses the same `endpoint`, project configuration, and CLI commands without Wrangler. Existing Worker installations do not change.
 
 ## Configuration
 

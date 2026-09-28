@@ -1,6 +1,6 @@
 {
   "name": "@tjcages/komo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Point, area, and threaded comments for website branches.",
   "type": "module",
   "license": "MIT",
@@ -14,6 +14,7 @@
     "src/types.ts",
     "src/emoji.ts",
     "README.md",
+    "NODE.md",
     "LICENSE",
     "src/page.ts",
     "NOTICE.md",
@@ -41,6 +42,9 @@
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
+    },
+    "./node": {
+      "import": "./dist/node.mjs"
     }
   },
   "sideEffects": [
@@ -48,7 +52,7 @@
     "./dist/picker-*.js"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs && pnpm run build:setup",
+    "build": "node scripts/build.mjs && pnpm run build:setup && pnpm run build:node",
     "prepack": "pnpm run build",
     "typecheck": "wrangler types --config server/wrangler.jsonc server/worker-configuration.d.ts && tsc -p tsconfig.json --noEmit && tsc -p server/tsconfig.json",
     "test": "pnpm run build:setup && vitest run --config vitest.config.ts",
@@ -59,7 +63,8 @@
     "build:setup": "esbuild src/setup-browser.ts --bundle --format=esm --minify --outfile=server/setup-client.txt",
     "size": "node scripts/measure.mjs",
     "bench": "node scripts/bench.mjs",
-    "test:package": "pnpm run build && node scripts/check-package.mjs"
+    "test:package": "pnpm run build && node scripts/check-package.mjs",
+    "build:node": "esbuild server/node.ts --bundle --platform=node --format=esm --packages=external --loader:.txt=text --outfile=dist/node.mjs && mkdir -p dist/postgres && cp server/postgres/*.sql dist/postgres/"
   },
   "repository": {
     "type": "git",
@@ -71,6 +76,7 @@
   },
   "devDependencies": {
     "@types/node": "^26",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@untitledui/icons": "0.0.22",
@@ -78,16 +84,17 @@
     "esbuild": "^0.25.0",
     "jsdom": "^30.1.0",
     "motion": "^12.43.0",
+    "react": "19.2.7",
     "react-colorful": "^5.8.1",
+    "react-dom": "19.2.7",
     "terser": "5.44.0",
     "typescript": "^6.0.0",
     "vitest": "4.1.11",
-    "wrangler": "4.136.3",
-    "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "wrangler": "4.136.3"
   },
   "dependencies": {
-    "emoji-regex": "^10.6.0"
+    "emoji-regex": "^10.6.0",
+    "pg": "^8.23.0"
   },
   "bin": {
     "komo": "./cli/index.mjs"
