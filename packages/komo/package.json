@@ -1,6 +1,6 @@
 {
   "name": "@tjcages/komo",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Point, area, and threaded comments for website branches.",
   "type": "module",
   "license": "MIT",
