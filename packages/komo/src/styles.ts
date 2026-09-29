@@ -76,7 +76,9 @@ textarea {
   max-height: 260px;
   width: 100%;
   line-height: 1.55;
+  scrollbar-width: none;
 }
+textarea::-webkit-scrollbar { display: none; }
 input {
   min-width: 0;
   width: 100%;
