@@ -1,12 +1,22 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { siteEdits, editedOrigins } from "../server/project-sites";
 import worker from "../server/index";
+import type { KomoBackendEnv } from "../server/database-adapter";
 vi.mock("../server/setup-client.txt", () => ({ default: "" }));
 afterEach(() => vi.restoreAllMocks());
-const environment = (all: ReturnType<typeof vi.fn>) => ({
-  PROJECTS: JSON.stringify({test: {repo: "owner/site", origins: ["https://revoked.example"]}}),
-  DB: {prepare: vi.fn(() => ({bind: () => ({all})}))},
-}) as unknown as Env;
+const environment = (all: ReturnType<typeof vi.fn>) =>
+  ({
+    PROJECTS: JSON.stringify({
+      test: { repo: "owner/site", origins: ["https://revoked.example"] },
+    }),
+    DB: {
+      dialect: "sqlite",
+      operations: {
+        projectSiteEdits: () => ({ execute: all }),
+        legacySiteEdits: () => ({ execute: all }),
+      },
+    },
+  }) as unknown as KomoBackendEnv;
 it("never restores revoked origins on operational database failures", async () => {
   const all = vi.fn().mockRejectedValueOnce(new Error("D1_ERROR: database is locked"))
     .mockResolvedValue({results: [{origin: "https://revoked.example", removed: 1}]});

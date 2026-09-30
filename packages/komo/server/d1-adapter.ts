@@ -13,15 +13,14 @@ import {
   sql,
   type SQL,
 } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { Pool } from "pg";
+import type { BatchItem } from "drizzle-orm/batch";
+import { drizzle } from "drizzle-orm/d1";
 import {
   databaseErrorCause,
   type BatchResults,
   type DatabaseResult,
   type DatabaseStatement,
+  type KomoBackendEnv,
   type KomoDatabase,
 } from "./database-adapter";
 import type {
@@ -29,26 +28,25 @@ import type {
   ThreadScope,
   ThreadPageOptions,
 } from "./database-operations";
-import * as t from "./postgres-schema";
+import * as t from "./sqlite-schema";
 
-/** Native Drizzle queries retain startup migrations and atomic PostgreSQL transactions. */
-export function postgresDatabase(connectionString: string) {
-  const pool = new Pool({ connectionString, max: 10 });
-  const db = drizzle({ client: pool });
-  type Session = Pick<
-    typeof db,
-    "select" | "selectDistinct" | "insert" | "update" | "delete" | "execute"
-  >;
-  // Each statement carries its execution directly, including the transaction session.
-  class PostgresStatement<Row> implements DatabaseStatement<Row> {
+const adapters = new WeakMap<D1Database, KomoDatabase>();
+
+/** Native Drizzle queries use D1's atomic batch execution and result decoding. */
+export function createD1Adapter(binding: D1Database): KomoDatabase {
+  const existing = adapters.get(binding);
+  if (existing) return existing;
+  const db = drizzle(binding);
+  // A per-adapter class keeps foreign operations out of an atomic batch.
+  class D1Statement<Row> implements DatabaseStatement<Row> {
     constructor(
-      private readonly query: (
-        session: Session,
-      ) => Promise<DatabaseResult<Row>>,
+      readonly query: BatchItem<"sqlite">,
+      readonly decode: (value: unknown) => DatabaseResult<Row>,
     ) {}
-    async execute(session: Session = db): Promise<DatabaseResult<Row>> {
+    async execute(): Promise<DatabaseResult<Row>> {
       try {
-        return await this.query(session);
+        const [result] = await db.batch([this.query]);
+        return this.decode(result);
       } catch (error) {
         throw databaseErrorCause(error);
       }
@@ -58,40 +56,36 @@ export function postgresDatabase(connectionString: string) {
     }
   }
   const read = <Row>(
-    build: (session: Session) => { execute(): Promise<Row[]> },
+    query: BatchItem<"sqlite"> & { all(): Promise<Row[]> },
     mutation = false,
   ) =>
-    new PostgresStatement(async (session) => {
-      const results = await build(session).execute();
+    new D1Statement(query, (value) => {
+      const results = value as Row[];
       return { results, meta: { changes: mutation ? results.length : 0 } };
     });
   const raw = <Row = Record<string, unknown>>(
     statement: SQL,
   ): DatabaseStatement<Row> =>
-    new PostgresStatement(async (session) => {
-      const result = await session.execute(statement);
+    new D1Statement(db.run(statement), (value) => {
+      const result = value as D1Result<Row>;
       return {
-        results: result.rows as Row[],
-        meta: { changes: result.rowCount ?? 0 },
+        results: result.results,
+        meta: { changes: result.meta.changes },
       };
     });
-  const write = (
-    build: (session: Session) => {
-      execute(): Promise<{
-        rows: Record<string, unknown>[];
-        rowCount: number | null;
-      }>;
-    },
-  ) =>
-    new PostgresStatement(async (session) => {
-      const result = await build(session).execute();
-      return { results: result.rows, meta: { changes: result.rowCount ?? 0 } };
+  const write = (query: BatchItem<"sqlite"> & { run(): Promise<D1Result> }) =>
+    new D1Statement(query, (value) => {
+      const result = value as D1Result<Record<string, unknown>>;
+      return {
+        results: result.results,
+        meta: { changes: result.meta.changes },
+      };
     });
-  return {
-    dialect: "postgres" as const,
+  const adapter: KomoDatabase = {
+    dialect: "sqlite",
     operations: {
       scopeRevision: (project: string, repo: string, branch: string) =>
-        read((db) =>
+        read(
           db
             .select({ version: t.scope_revisions.version })
             .from(t.scope_revisions)
@@ -104,7 +98,7 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       threadPage: (scope: ThreadScope, options: ThreadPageOptions) =>
-        read((db) =>
+        read(
           db
             .select({
               ...getColumns(t.threads),
@@ -135,7 +129,7 @@ export function postgresDatabase(connectionString: string) {
             .offset(options.cursor ? 0 : options.offset),
         ),
       threadComments: (ids: string[]) =>
-        read((db) =>
+        read(
           db
             .select({
               id: t.comments.id,
@@ -155,7 +149,7 @@ export function postgresDatabase(connectionString: string) {
             .orderBy(t.comments.created_at, t.comments.id),
         ),
       threadReactions: (ids: string[]) =>
-        read((db) =>
+        read(
           db
             .select(getColumns(t.reactions))
             .from(t.reactions)
@@ -163,7 +157,7 @@ export function postgresDatabase(connectionString: string) {
             .where(inArray(t.comments.thread_id, ids)),
         ),
       projectCommentCount: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({ used: count() })
             .from(t.comments)
@@ -171,7 +165,7 @@ export function postgresDatabase(connectionString: string) {
             .where(eq(t.threads.project, project)),
         ),
       connectedProjects: (user: string) =>
-        read((db) =>
+        read(
           db
             .select({ project: t.project_members.project })
             .from(t.project_members)
@@ -184,7 +178,7 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       memberAccess: (project: string, user: string) =>
-        read((db) =>
+        read(
           db
             .select({ user_id: t.project_owners.user_id })
             .from(t.project_owners)
@@ -208,26 +202,25 @@ export function postgresDatabase(connectionString: string) {
         ),
       incrementRateLimit: (key: string, expires: number) =>
         read(
-          (db) =>
-            db
-              .insert(t.rate_limits)
-              .values({ key, count: 1, expires_at: expires })
-              .onConflictDoUpdate({
-                target: t.rate_limits.key,
-                set: { count: sql`${t.rate_limits.count}+1` },
-              })
-              .returning({ count: t.rate_limits.count }),
+          db
+            .insert(t.rate_limits)
+            .values({ key, count: 1, expires_at: expires })
+            .onConflictDoUpdate({
+              target: t.rate_limits.key,
+              set: { count: sql`${t.rate_limits.count}+1` },
+            })
+            .returning({ count: t.rate_limits.count }),
           true,
         ),
       projectThread: (id: string, project: string) =>
-        read((db) =>
+        read(
           db
             .select({ id: t.threads.id })
             .from(t.threads)
             .where(and(eq(t.threads.id, id), eq(t.threads.project, project))),
         ),
       projectComment: (id: string, project: string) =>
-        read((db) =>
+        read(
           db
             .select({ id: t.comments.id })
             .from(t.comments)
@@ -236,60 +229,56 @@ export function postgresDatabase(connectionString: string) {
         ),
       importUser: (values: DatabaseInsert<"users">) =>
         read(
-          (db) =>
-            db
-              .insert(t.users)
-              .values(values)
-              .onConflictDoNothing()
-              .returning({ id: t.users.id }),
+          db
+            .insert(t.users)
+            .values(values)
+            .onConflictDoNothing()
+            .returning({ id: t.users.id }),
           true,
         ),
       importThread: (values: DatabaseInsert<"threads">) =>
         read(
-          (db) =>
-            db
-              .insert(t.threads)
-              .values(values)
-              .onConflictDoNothing()
-              .returning({ id: t.threads.id }),
+          db
+            .insert(t.threads)
+            .values(values)
+            .onConflictDoNothing()
+            .returning({ id: t.threads.id }),
           true,
         ),
       importComment: (values: DatabaseInsert<"comments">) =>
         read(
-          (db) =>
-            db
-              .insert(t.comments)
-              .values(values)
-              .onConflictDoNothing()
-              .returning({ id: t.comments.id }),
+          db
+            .insert(t.comments)
+            .values(values)
+            .onConflictDoNothing()
+            .returning({ id: t.comments.id }),
           true,
         ),
       importReaction: (values: DatabaseInsert<"reactions">) =>
         read(
-          (db) =>
-            db
-              .insert(t.reactions)
-              .values(values)
-              .onConflictDoNothing()
-              .returning({ comment_id: t.reactions.comment_id }),
+          db
+            .insert(t.reactions)
+            .values(values)
+            .onConflictDoNothing()
+            .returning({ comment_id: t.reactions.comment_id }),
           true,
         ),
       insertProjectMember: (project: string, user: string) =>
-        write((db) =>
+        write(
           db
             .insert(t.project_members)
             .values({ project, user_id: user })
             .onConflictDoNothing(),
         ),
       exportRevision: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({ version: t.export_revisions.version })
             .from(t.export_revisions)
             .where(eq(t.export_revisions.project, project)),
         ),
       exportThreads: (project: string, offset: number) =>
-        read((db) =>
+        read(
           db
             .select({
               id: t.threads.id,
@@ -309,7 +298,7 @@ export function postgresDatabase(connectionString: string) {
             .offset(offset),
         ),
       exportComments: (project: string, offset: number) =>
-        read((db) =>
+        read(
           db
             .select({
               id: t.comments.id,
@@ -327,7 +316,7 @@ export function postgresDatabase(connectionString: string) {
             .offset(offset),
         ),
       exportReactions: (project: string, offset: number) =>
-        read((db) =>
+        read(
           db
             .select(getColumns(t.reactions))
             .from(t.reactions)
@@ -343,7 +332,7 @@ export function postgresDatabase(connectionString: string) {
             .offset(offset),
         ),
       exportUsers: (project: string, offset: number) =>
-        read((db) =>
+        read(
           db
             .selectDistinct({
               id: t.users.id,
@@ -396,98 +385,101 @@ export function postgresDatabase(connectionString: string) {
         ),
       clearResolvedThreads: (project: string, ids?: string[]) =>
         read(
-          (db) =>
-            db
-              .delete(t.threads)
-              .where(
-                and(
-                  eq(t.threads.project, project),
-                  eq(t.threads.resolved, 1),
-                  ids ? inArray(t.threads.id, ids) : undefined,
-                ),
-              )
-              .returning({ id: t.threads.id }),
+          db
+            .delete(t.threads)
+            .where(
+              and(
+                eq(t.threads.project, project),
+                eq(t.threads.resolved, 1),
+                // Bind the ID list once to stay within D1's parameter limit.
+                ids
+                  ? inArray(
+                      t.threads.id,
+                      db
+                        .select({ value: sql<string>`value` })
+                        .from(sql`json_each(${JSON.stringify(ids)})`),
+                    )
+                  : undefined,
+              ),
+            )
+            .returning({ id: t.threads.id }),
           true,
         ),
       deleteProjectRecords: (project: string) => [
-        write((db) =>
-          db.delete(t.sessions).where(eq(t.sessions.project, project)),
-        ),
-        write((db) =>
+        write(db.delete(t.sessions).where(eq(t.sessions.project, project))),
+        write(
           db
             .delete(t.project_members)
             .where(eq(t.project_members.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.project_access)
             .where(eq(t.project_access.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.project_invites)
             .where(eq(t.project_invites.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.project_settings)
             .where(eq(t.project_settings.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.project_owners)
             .where(eq(t.project_owners.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.project_quotas)
             .where(eq(t.project_quotas.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.workspace_domains)
             .where(eq(t.workspace_domains.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.scope_revisions)
             .where(eq(t.scope_revisions.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.export_revisions)
             .where(eq(t.export_revisions.project, project)),
         ),
-        write((db) =>
+        write(
           db.delete(t.oauth_states).where(eq(t.oauth_states.project, project)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.setup_requests)
             .where(eq(t.setup_requests.project, project)),
         ),
       ],
       cleanupExpired: (now: number) => [
-        write((db) =>
+        write(
           db.delete(t.rate_limits).where(lt(t.rate_limits.expires_at, now)),
         ),
-        write((db) =>
-          db.delete(t.sessions).where(lt(t.sessions.expires_at, now)),
-        ),
-        write((db) =>
+        write(db.delete(t.sessions).where(lt(t.sessions.expires_at, now))),
+        write(
           db
             .delete(t.project_invites)
             .where(lt(t.project_invites.expires_at, now)),
         ),
-        write((db) =>
+        write(
           db.delete(t.oauth_states).where(lt(t.oauth_states.expires_at, now)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.setup_requests)
             .where(lt(t.setup_requests.expires_at, now)),
         ),
-        write((db) =>
+        write(
           db
             .delete(t.users)
             .where(
@@ -513,7 +505,7 @@ export function postgresDatabase(connectionString: string) {
       ],
 
       insertUser: (values: DatabaseInsert<"users">, ignoreConflict = false) => {
-        return write((db) =>
+        return write(
           ignoreConflict
             ? db
                 .insert(t.users)
@@ -523,13 +515,13 @@ export function postgresDatabase(connectionString: string) {
         );
       },
       userById: (id: string) =>
-        read((db) => db.select().from(t.users).where(eq(t.users.id, id))),
+        read(db.select().from(t.users).where(eq(t.users.id, id))),
       updateUser: (id: string, values: Partial<DatabaseInsert<"users">>) =>
-        write((db) => db.update(t.users).set(values).where(eq(t.users.id, id))),
+        write(db.update(t.users).set(values).where(eq(t.users.id, id))),
       insertSession: (values: DatabaseInsert<"sessions">) =>
-        write((db) => db.insert(t.sessions).values(values)),
+        write(db.insert(t.sessions).values(values)),
       sessionUser: (hash: string, project: string, now: number) =>
-        read((db) =>
+        read(
           db
             .select(getColumns(t.users))
             .from(t.sessions)
@@ -543,11 +535,9 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       deleteSession: (hash: string) =>
-        write((db) =>
-          db.delete(t.sessions).where(eq(t.sessions.token_hash, hash)),
-        ),
+        write(db.delete(t.sessions).where(eq(t.sessions.token_hash, hash))),
       deleteMemberSessions: (project: string, user: string) =>
-        write((db) =>
+        write(
           db
             .delete(t.sessions)
             .where(
@@ -558,9 +548,9 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       insertOAuthState: (values: DatabaseInsert<"oauth_states">) =>
-        write((db) => db.insert(t.oauth_states).values(values)),
+        write(db.insert(t.oauth_states).values(values)),
       oauthVerifier: (hash: string, provider: string, now: number) =>
-        read((db) =>
+        read(
           db
             .select({ verifier: t.oauth_states.verifier })
             .from(t.oauth_states)
@@ -574,23 +564,22 @@ export function postgresDatabase(connectionString: string) {
         ),
       consumeOAuthState: (hash: string, provider: string, now: number) =>
         read(
-          (db) =>
-            db
-              .delete(t.oauth_states)
-              .where(
-                and(
-                  eq(t.oauth_states.state_hash, hash),
-                  eq(t.oauth_states.provider, provider),
-                  gt(t.oauth_states.expires_at, now),
-                ),
-              )
-              .returning(),
+          db
+            .delete(t.oauth_states)
+            .where(
+              and(
+                eq(t.oauth_states.state_hash, hash),
+                eq(t.oauth_states.provider, provider),
+                gt(t.oauth_states.expires_at, now),
+              ),
+            )
+            .returning(),
           true,
         ),
       insertSetupRequest: (values: DatabaseInsert<"setup_requests">) =>
-        write((db) => db.insert(t.setup_requests).values(values)),
+        write(db.insert(t.setup_requests).values(values)),
       pendingSetup: (id: string, now: number) =>
-        read((db) =>
+        read(
           db
             .select({ config: t.setup_requests.config })
             .from(t.setup_requests)
@@ -603,7 +592,7 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       pollSetup: (id: string, hash: string, now: number) =>
-        read((db) =>
+        read(
           db
             .select({
               project: t.setup_requests.project,
@@ -620,48 +609,45 @@ export function postgresDatabase(connectionString: string) {
         ),
       consumeSetup: (id: string, now: number) =>
         read(
-          (db) =>
-            db
-              .delete(t.setup_requests)
-              .where(
-                and(
-                  eq(t.setup_requests.id, id),
-                  isNull(t.setup_requests.project),
-                  gt(t.setup_requests.expires_at, now),
-                ),
-              )
-              .returning(),
+          db
+            .delete(t.setup_requests)
+            .where(
+              and(
+                eq(t.setup_requests.id, id),
+                isNull(t.setup_requests.project),
+                gt(t.setup_requests.expires_at, now),
+              ),
+            )
+            .returning(),
           true,
         ),
       workspaceById: (id: string) =>
-        read((db) =>
-          db.select().from(t.workspaces).where(eq(t.workspaces.id, id)),
-        ),
+        read(db.select().from(t.workspaces).where(eq(t.workspaces.id, id))),
       workspaceCount: (user: string) =>
-        read((db) =>
+        read(
           db
             .select({ used: count() })
             .from(t.workspaces)
             .where(eq(t.workspaces.owner_id, user)),
         ),
       deleteWorkspace: (id: string) =>
-        write((db) => db.delete(t.workspaces).where(eq(t.workspaces.id, id))),
+        write(db.delete(t.workspaces).where(eq(t.workspaces.id, id))),
       projectOwner: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({ user_id: t.project_owners.user_id })
             .from(t.project_owners)
             .where(eq(t.project_owners.project, project)),
         ),
       insertProjectOwner: (project: string, user: string) =>
-        write((db) =>
+        write(
           db
             .insert(t.project_owners)
             .values({ project, user_id: user })
             .onConflictDoNothing(),
         ),
       projectQuota: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({
               comments: t.project_quotas.comments,
@@ -672,14 +658,14 @@ export function postgresDatabase(connectionString: string) {
             .where(eq(t.project_quotas.project, project)),
         ),
       projectAccess: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({ access: t.project_settings.access })
             .from(t.project_settings)
             .where(eq(t.project_settings.project, project)),
         ),
       setProjectAccess: (project: string, access: string) =>
-        write((db) =>
+        write(
           db
             .insert(t.project_settings)
             .values({ project, access })
@@ -689,7 +675,7 @@ export function postgresDatabase(connectionString: string) {
             }),
         ),
       projectMembers: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({
               id: t.users.id,
@@ -702,7 +688,7 @@ export function postgresDatabase(connectionString: string) {
             .orderBy(t.users.name),
         ),
       projectInvites: (project: string, now: number) =>
-        read((db) =>
+        read(
           db
             .select({
               email: t.project_invites.email,
@@ -718,7 +704,7 @@ export function postgresDatabase(connectionString: string) {
             .orderBy(t.project_invites.email),
         ),
       deleteProjectInvite: (project: string, email: string) =>
-        write((db) =>
+        write(
           db
             .delete(t.project_invites)
             .where(
@@ -729,7 +715,7 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       deleteProjectMember: (project: string, user: string) =>
-        write((db) =>
+        write(
           db
             .delete(t.project_access)
             .where(
@@ -740,7 +726,7 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       projectSiteEdits: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({
               origin: t.project_sites.origin,
@@ -750,14 +736,14 @@ export function postgresDatabase(connectionString: string) {
             .where(eq(t.project_sites.project, project)),
         ),
       legacySiteEdits: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({ origin: t.project_sites.origin })
             .from(t.project_sites)
             .where(eq(t.project_sites.project, project)),
         ),
       workspaceDomains: (project: string) =>
-        read((db) =>
+        read(
           db
             .select({ origin: t.workspace_domains.origin })
             .from(t.workspace_domains)
@@ -765,30 +751,30 @@ export function postgresDatabase(connectionString: string) {
             .orderBy(t.workspace_domains.origin),
         ),
       deleteProjectSites: (project: string) =>
-        write((db) =>
+        write(
           db
             .delete(t.project_sites)
             .where(eq(t.project_sites.project, project)),
         ),
       insertProjectSite: (values: DatabaseInsert<"project_sites">) =>
-        write((db) => db.insert(t.project_sites).values(values)),
+        write(db.insert(t.project_sites).values(values)),
       deleteWorkspaceDomains: (project: string) =>
-        write((db) =>
+        write(
           db
             .delete(t.workspace_domains)
             .where(eq(t.workspace_domains.project, project)),
         ),
       insertWorkspaceDomain: (values: DatabaseInsert<"workspace_domains">) =>
-        write((db) => db.insert(t.workspace_domains).values(values)),
+        write(db.insert(t.workspace_domains).values(values)),
       insertThread: (values: DatabaseInsert<"threads">) =>
-        write((db) => db.insert(t.threads).values(values)),
+        write(db.insert(t.threads).values(values)),
       scopedThread: (
         id: string,
         project: string,
         repo: string,
         branch: string,
       ) =>
-        read((db) =>
+        read(
           db
             .select()
             .from(t.threads)
@@ -802,17 +788,13 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       updateThread: (id: string, values: Partial<DatabaseInsert<"threads">>) =>
-        write((db) =>
-          db.update(t.threads).set(values).where(eq(t.threads.id, id)),
-        ),
+        write(db.update(t.threads).set(values).where(eq(t.threads.id, id))),
       deleteProjectThreads: (project: string) =>
-        write((db) =>
-          db.delete(t.threads).where(eq(t.threads.project, project)),
-        ),
+        write(db.delete(t.threads).where(eq(t.threads.project, project))),
       insertComment: (values: DatabaseInsert<"comments">) =>
-        write((db) => db.insert(t.comments).values(values)),
+        write(db.insert(t.comments).values(values)),
       threadComment: (id: string, thread: string) =>
-        read((db) =>
+        read(
           db
             .select({
               id: t.comments.id,
@@ -828,7 +810,7 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
       firstCommentAuthor: (thread: string) =>
-        read((db) =>
+        read(
           db
             .select({ user_id: t.comments.user_id })
             .from(t.comments)
@@ -837,21 +819,21 @@ export function postgresDatabase(connectionString: string) {
             .limit(1),
         ),
       updateComment: (id: string, body: string, now: number) =>
-        write((db) =>
+        write(
           db
             .update(t.comments)
             .set({ body, edited_at: now })
             .where(eq(t.comments.id, id)),
         ),
       insertReaction: (comment: string, user: string, emoji: string) =>
-        write((db) =>
+        write(
           db
             .insert(t.reactions)
             .values({ comment_id: comment, user_id: user, emoji })
             .onConflictDoNothing(),
         ),
       deleteReactions: (comment: string, user?: string, emoji?: string) =>
-        write((db) =>
+        write(
           db
             .delete(t.reactions)
             .where(
@@ -863,78 +845,35 @@ export function postgresDatabase(connectionString: string) {
             ),
         ),
     },
-    commentSequence: sql`c.seq`,
+    commentSequence: sql`c.rowid`,
     raw,
     async batch<const T extends readonly DatabaseStatement<unknown>[]>(
       statements: T,
     ): Promise<BatchResults<T>> {
+      if (!statements.length) return [] as BatchResults<T>;
       const commands = statements.map((statement) => {
-        if (!(statement instanceof PostgresStatement))
+        if (!(statement instanceof D1Statement))
           throw Error(
             "Database batch contains an operation from another adapter.",
           );
         return statement;
       });
-      // Match D1's serialized writes; retry serialization conflicts and deadlocks.
-      for (let attempt = 0; ; attempt++) {
-        try {
-          return await db.transaction(
-            async (transaction) => {
-              const results: DatabaseResult<unknown>[] = [];
-              for (const statement of commands) {
-                results.push(await statement.execute(transaction));
-              }
-              return results as BatchResults<T>;
-            },
-            { isolationLevel: "serializable" },
-          );
-        } catch (error) {
-          const cause = databaseErrorCause(error);
-          if (
-            attempt < 3 &&
-            cause instanceof Error &&
-            "code" in cause &&
-            (cause.code === "40001" || cause.code === "40P01")
-          )
-            continue;
-          throw cause;
-        }
-      }
-    },
-    async migrate() {
-      const client = await pool.connect();
       try {
-        await client.query("BEGIN");
-        await client.query("SELECT pg_advisory_xact_lock(7217495)");
-        await client.query(
-          "CREATE TABLE IF NOT EXISTS komo_schema (version integer PRIMARY KEY)",
-        );
-        const versions = await client.query<{ version: number }>(
-          "SELECT version FROM komo_schema",
-        );
-        if (!versions.rows.length) {
-          const path = fileURLToPath(
-            new URL("./postgres/001_initial.sql", import.meta.url),
-          );
-          await client.query(await readFile(path, "utf8"));
-          await client.query("INSERT INTO komo_schema(version) VALUES(1)");
-        } else if (
-          versions.rows.length !== 1 ||
-          versions.rows[0].version !== 1
-        ) {
-          throw Error("Unsupported PostgreSQL schema version");
-        }
-        await client.query("COMMIT");
+        const [first, ...rest] = commands.map((statement) => statement.query);
+        const results = await db.batch([first, ...rest]);
+        return results.map((result, index) =>
+          commands[index].decode(result),
+        ) as BatchResults<T>;
       } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
+        throw databaseErrorCause(error);
       }
     },
-    close: () => pool.end(),
-  } satisfies KomoDatabase & {
-    migrate(): Promise<void>;
-    close(): Promise<void>;
   };
+  adapters.set(binding, adapter);
+  return adapter;
+}
+
+/** Preserve the Worker binding API while accepting the internal Node adapter. */
+export function backendEnvironment(env: Env | KomoBackendEnv): KomoBackendEnv {
+  return { ...env, DB: "dialect" in env.DB ? env.DB : createD1Adapter(env.DB) };
 }

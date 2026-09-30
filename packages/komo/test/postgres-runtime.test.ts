@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { postgresDatabase } from "../server/postgres";
 import worker from "../server/index";
+import { sql } from "drizzle-orm";
 
 vi.mock("../server/setup-client.txt", () => ({ default: "" }));
 const connection = process.env.KOMO_TEST_POSTGRES_URL;
@@ -68,11 +69,10 @@ run(
     expect(reviewer.status).toBe(201);
     expect(bot.status).toBe(201);
     await db
-      .prepare(
-        "INSERT INTO project_quotas(project,max_comments,max_bytes) VALUES(?,?,?)",
+      .raw(
+        sql`INSERT INTO project_quotas(project,max_comments,max_bytes) VALUES(${"review"},${1},${100000})`,
       )
-      .bind("review", 1, 100000)
-      .run();
+      .execute();
     const anchor = {
       x: 0,
       y: 0,
@@ -107,9 +107,10 @@ run(
     // The one-comment quota also applies to replies.
     expect(reply.status).toBe(409);
     await db
-      .prepare("UPDATE project_quotas SET max_comments=? WHERE project=?")
-      .bind(2, "review")
-      .run();
+      .raw(
+        sql`UPDATE project_quotas SET max_comments=${2} WHERE project=${"review"}`,
+      )
+      .execute();
     expect(
       (
         await request(
@@ -145,18 +146,12 @@ run(
     expect(listed.data.threads[0].comments).toHaveLength(2);
     expect(typeof listed.data.threads[0].createdAt).toBe("number");
     expect(typeof listed.data.revision).toBe("number");
-    const deleted = await db
-      .prepare(
-        "DELETE FROM threads WHERE project=? AND resolved=1 AND id IN (SELECT value FROM json_each(?)) RETURNING id",
-      )
-      .bind("review", JSON.stringify([first.data.id]))
-      .all<{ id: string }>();
+    const deleted = await db.operations
+      .clearResolvedThreads("review", [first.data.id])
+      .execute();
     expect(deleted.results).toEqual([{ id: first.data.id }]);
     expect(
-      await db
-        .prepare("SELECT comments,bytes FROM project_quotas WHERE project=?")
-        .bind("review")
-        .first<{ comments: number; bytes: number }>(),
+      await db.operations.projectQuota("review").first().then(row => row && ({comments:row.comments,bytes:row.bytes})),
     ).toEqual({ comments: 0, bytes: 0 });
   },
 );

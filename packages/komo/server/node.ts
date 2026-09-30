@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
-import { Readable } from "node:stream";
 import { isIP } from "node:net";
-import { postgresDatabase } from "./postgres";
+import { Readable } from "node:stream";
+import type { KomoBackendEnv } from "./database-adapter";
 import worker from "./index";
+import { postgresDatabase } from "./postgres";
 import { sitePattern } from "./validation";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -48,7 +49,7 @@ const env = {
   GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ?? "",
   GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID ?? "",
   GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET ?? "",
-} as unknown as Env;
+} satisfies KomoBackendEnv;
 const port = Number(process.env.PORT ?? 8080);
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw Error("Invalid PORT");
