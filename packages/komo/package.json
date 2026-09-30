@@ -7,6 +7,25 @@
   "files": [
     "dist",
     "server/index.ts",
+    "server/komo-app.ts",
+    "server/komo-context.ts",
+    "server/database-adapter.ts",
+    "server/d1-adapter.ts",
+    "server/sqlite-schema.ts",
+    "server/database-operations.ts",
+    "server/account-routes.ts",
+    "server/auth-sessions.ts",
+    "server/oauth-routes.ts",
+    "server/setup-routes.ts",
+    "server/workspace-routes.ts",
+    "server/workspace-setup.ts",
+    "server/project-routes.ts",
+    "server/project-middleware.ts",
+    "server/request-limits.ts",
+    "server/request-validation.ts",
+    "server/thread-routes.ts",
+    "server/thread-list.ts",
+    "server/thread-records.ts",
     "server/validation.ts",
     "server/migrations",
     "server/tsconfig.json",
@@ -93,8 +112,12 @@
     "wrangler": "4.136.3"
   },
   "dependencies": {
+    "@hono/zod-validator": "^0.9.1",
+    "drizzle-orm": "1.0.0-rc.4",
     "emoji-regex": "^10.6.0",
-    "pg": "^8.23.0"
+    "hono": "^4.13.11",
+    "pg": "^8.23.0",
+    "zod": "^4.6.5"
   },
   "bin": {
     "komo": "./cli/index.mjs"

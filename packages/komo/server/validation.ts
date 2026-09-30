@@ -1,44 +1,46 @@
 import { canonicalPage } from "../src/page.js";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { HTTPException } from "hono/http-exception";
 import type { Anchor } from "../src/types.js";
 
-export class HttpError extends Error {
+/** HTTP errors may include a stable code consumed by the client. */
+export class HttpError extends HTTPException {
   constructor(
-    public status: number,
+    status: ContentfulStatusCode,
     message: string,
     public code?: string,
   ) {
-    super(message);
+    super(status, { message });
   }
 }
-export function check(
-  condition: unknown,
-  status: number,
-  message: string,
-): asserts condition {
-  if (!condition) throw new HttpError(status, message);
-}
+
 export function string(value: unknown, max: number, label: string): string {
-  check(
-    typeof value === "string" && value.trim().length > 0 && value.length <= max,
-    400,
-    `Invalid ${label}.`,
-  );
+  if (
+    !(
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      value.length <= max
+    )
+  )
+    throw new HttpError(400, `Invalid ${label}.`);
   return value.trim();
 }
 export function pagePath(value: unknown): string {
   const page = string(value, 2000, "page");
-  check(
-    page.startsWith("/") &&
+  if (
+    !(
+      page.startsWith("/") &&
       !page.startsWith("//") &&
       !/[?#\\]/.test(page) &&
-      ![...page].some((char) => char.charCodeAt(0) < 32),
-    400,
-    "Invalid page path.",
-  );
+      ![...page].some((char) => char.charCodeAt(0) < 32)
+    )
+  )
+    throw new HttpError(400, "Invalid page path.");
   return canonicalPage(page);
 }
 export function anchorValue(value: unknown): Anchor {
-  check(value && typeof value === "object", 400, "Invalid anchor.");
+  if (!(value && typeof value === "object"))
+    throw new HttpError(400, "Invalid anchor.");
   const a = value as Record<string, unknown>;
   for (const key of [
     "x",
@@ -49,43 +51,43 @@ export function anchorValue(value: unknown): Anchor {
     "pageY",
     "viewportWidth",
   ]) {
-    check(
-      typeof a[key] === "number" && Number.isFinite(a[key]) && a[key] >= 0,
-      400,
-      `Invalid anchor ${key}.`,
-    );
+    if (!(typeof a[key] === "number" && Number.isFinite(a[key]) && a[key] >= 0))
+      throw new HttpError(400, `Invalid anchor ${key}.`);
   }
   for (const key of ["x", "y", "width", "height"])
-    check(Number(a[key]) <= 1, 400, "Anchor outside element.");
-  check(
-    Number(a.x) + Number(a.width) <= 1.001 &&
-      Number(a.y) + Number(a.height) <= 1.001,
-    400,
-    "Area outside element.",
-  );
-  check(
-    Number(a.viewportWidth) > 0 &&
+    if (!(Number(a[key]) <= 1))
+      throw new HttpError(400, "Anchor outside element.");
+  if (
+    !(
+      Number(a.x) + Number(a.width) <= 1.001 &&
+      Number(a.y) + Number(a.height) <= 1.001
+    )
+  )
+    throw new HttpError(400, "Area outside element.");
+  if (
+    !(
+      Number(a.viewportWidth) > 0 &&
       Number(a.viewportWidth) <= 20000 &&
       Number(a.pageY) <= 10000000 &&
-      Number(a.pageX) <= 20000,
-    400,
-    "Anchor outside page.",
-  );
-  check(
-    typeof a.selector === "string" &&
+      Number(a.pageX) <= 20000
+    )
+  )
+    throw new HttpError(400, "Anchor outside page.");
+  if (
+    !(
+      typeof a.selector === "string" &&
       a.selector.length <= 2000 &&
       typeof a.text === "string" &&
-      a.text.length <= 160,
-    400,
-    "Invalid anchor selector.",
-  );
+      a.text.length <= 160
+    )
+  )
+    throw new HttpError(400, "Invalid anchor selector.");
   let context: Anchor["context"];
   if (a.context !== undefined) {
-    check(
-      a.context && typeof a.context === "object" && !Array.isArray(a.context),
-      400,
-      "Invalid anchor context.",
-    );
+    if (
+      !(a.context && typeof a.context === "object" && !Array.isArray(a.context))
+    )
+      throw new HttpError(400, "Invalid anchor context.");
     context = {};
     const supplied = a.context as Record<string, unknown>;
     for (const [key, max] of Object.entries({
@@ -99,11 +101,8 @@ export function anchorValue(value: unknown): Anchor {
       scope: 2000,
     })) {
       if (supplied[key] === undefined) continue;
-      check(
-        typeof supplied[key] === "string" && supplied[key].length <= max,
-        400,
-        `Invalid anchor context ${key}.`,
-      );
+      if (!(typeof supplied[key] === "string" && supplied[key].length <= max))
+        throw new HttpError(400, `Invalid anchor context ${key}.`);
       context[key as keyof typeof context] = supplied[key];
     }
   }
@@ -170,11 +169,8 @@ export function originAllowed(origin: string, patterns: string[]): boolean {
  * https://*-site.example.workers.dev. The wildcard never spans dots.
  */
 export function sitePattern(value: unknown): string {
-  check(
-    typeof value === "string" && value.length <= 300,
-    400,
-    "Enter a site address.",
-  );
+  if (!(typeof value === "string" && value.length <= 300))
+    throw new HttpError(400, "Enter a site address.");
   const site = value.trim().replace(/\/$/, "").toLowerCase();
   if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(site)) return site;
   const match = /^https:\/\/([^/?#@]+)$/.exec(site);
@@ -186,35 +182,44 @@ export function sitePattern(value: unknown): string {
   } catch {
     url = undefined;
   }
-  check(
-    !!match &&
+  if (
+    !(
+      !!match &&
       url?.origin === site &&
       !rest.join(".").includes("*") &&
       first.split("*").length - 1 <= 1 &&
       (!first.includes("*") ||
-        (rest.length >= 2 && /^[a-z0-9*-]+$/.test(first))),
-    400,
-    "Use an HTTPS site like https://your-site.com, or a wildcard like https://*-preview.your-site.com.",
-  );
+        (rest.length >= 2 && /^[a-z0-9*-]+$/.test(first)))
+    )
+  )
+    throw new HttpError(
+      400,
+      "Use an HTTPS site like https://your-site.com, or a wildcard like https://*-preview.your-site.com.",
+    );
   return site;
 }
 
 export function cliReturnOrigin(value: unknown, fallback: string): string {
   if (value === undefined) return fallback;
-  check(typeof value === "string", 400, "Invalid CLI return origin.");
+  if (typeof value !== "string")
+    throw new HttpError(400, "Invalid CLI return origin.");
   let url: URL;
   try {
     url = new URL(value);
   } catch {
     throw new HttpError(400, "Invalid CLI return origin.");
   }
-  check(
-    url.protocol === "http:" &&
+  if (
+    !(
+      url.protocol === "http:" &&
       url.hostname === "127.0.0.1" &&
       Number(url.port) >= 1024 &&
-      url.origin === value,
-    400,
-    "CLI sign-in must return to an ephemeral loopback port.",
-  );
+      url.origin === value
+    )
+  )
+    throw new HttpError(
+      400,
+      "CLI sign-in must return to an ephemeral loopback port.",
+    );
   return url.origin;
 }

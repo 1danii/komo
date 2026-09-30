@@ -1,14 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { maintain } from "../server/workspaces";
+import type { KomoDatabase } from "../server/database-adapter";
 afterEach(() => vi.useRealTimers());
 it("bounds fallback cleanup, isolates databases, and lets cron run explicitly", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(100000);
   const makeDb = () =>
     ({
-      prepare: vi.fn(() => ({ bind: vi.fn() })),
+      operations: { cleanupExpired: vi.fn().mockReturnValue([]) },
       batch: vi.fn().mockResolvedValue([]),
-    }) as unknown as D1Database;
+    }) as unknown as KomoDatabase;
   const first = makeDb(),
     second = makeDb();
   await Promise.all([maintain(first), maintain(first), maintain(second)]);
