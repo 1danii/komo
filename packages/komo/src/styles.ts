@@ -2,7 +2,8 @@ import { morphingMenuStyles } from "./morphing-menu-styles.js";
 export const styles: string = `
 .project-management[hidden], .project-management [hidden] { display:none !important; }
 .project-management .account-sites-summary { justify-content: space-between; }
-.project-management .account-usage-status { padding: 0 16px; }
+.project-management .account-sites-clip > .account-usage-status { padding: 0 16px; }
+.account-name-label > .account-usage-status:empty { display: none; }
 .project-management summary { cursor:pointer; }
 .project-member { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12px; overflow-wrap:anywhere; }
 .project-danger { display:grid; gap:10px; font-size:12px; }
@@ -19,7 +20,7 @@ export const styles: string = `
 .cleanup-actions button:hover { background:#ffffff15; }
 .cleanup-actions button:focus-visible { outline:2px solid var(--accent,#c8b5f4); outline-offset:2px; }
 .cleanup-actions .destructive, .panel-head .copy-page-prompt.destructive { color:#fda29b; }
-.copy-page-prompt:disabled { opacity:.4; cursor:default; }
+.copy-page-prompt:disabled { opacity:.4; }
 :host {
   all: initial;
   line-height: 1.45;
@@ -48,8 +49,9 @@ button {
 }
 button:disabled {
   opacity: 0.45;
-  cursor: wait;
+  cursor: default;
 }
+button[data-loading] { cursor: wait; }
 button:focus-visible,
 a:focus-visible {
   outline: 2px solid #f48120;
@@ -718,10 +720,6 @@ ${morphingMenuStyles}
     background 150ms ease,
     transform 150ms ease;
 }
-.send:disabled {
-  opacity: 1;
-  cursor: default;
-}
 .send svg {
   width: 18px;
   height: 18px;
@@ -1065,6 +1063,7 @@ ${morphingMenuStyles}
   box-shadow: inset 0 0 0 1px #ffffff20;
 }
 .send:disabled {
+  opacity: 1;
   background: #ffffff0a;
   color: #707070;
 }
@@ -1468,6 +1467,11 @@ ${morphingMenuStyles}
 }
 .selection-menu .menu-action:last-child::before {
   display: none;
+}
+.selection-menu .comment-menu-items {
+  max-height: min(300px, calc(100dvh - 16px));
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 .selection-menu .comment-menu-items:popover-open {
   animation: selection-enter 250ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -2044,6 +2048,7 @@ textarea {
 }
 .account-sites-content { display: grid; gap: 14px; padding: 0 16px 16px; }
 .account-usage-status, .account-usage-note { font-size: 11px; line-height: 1.5; color: #909090; }
+.github-issue-link { text-align: center; }
 
 @media (max-width: 760px), (max-width: 1000px) and (max-height: 500px) {
 

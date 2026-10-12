@@ -1,4 +1,5 @@
 import { accountRoutes } from "./account-routes";
+import { githubConnectRoutes } from "./github-connect-routes";
 import { komoFactory } from "./komo-context";
 import { requireProjectOwner, resolveProject } from "./project-middleware";
 import { enforceRequestLimit } from "./request-limits";
@@ -105,6 +106,7 @@ export const komoApp = komoFactory
     return c.body(setupClient);
   })
   .use(serviceRequestPolicy)
+  .route("/", githubConnectRoutes)
   .route("/", setupRoutes)
   .use(resolveProject)
   .route("/", workspaceRoutes)

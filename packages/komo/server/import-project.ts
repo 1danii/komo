@@ -2,6 +2,7 @@ import { isEmoji } from "../src/emoji";
 import type { DatabaseStatement, KomoBackendEnv } from "./database-adapter";
 import { digest } from "./digest";
 import { anchorValue, pagePath, string, HttpError } from "./validation";
+import { sql } from "drizzle-orm";
 
 export async function importProject(
   env: KomoBackendEnv,
@@ -123,6 +124,25 @@ export async function importProject(
           user_id: await id(row.user_id, true),
           emoji: row.emoji,
         }),
+      );
+    } else if (kind === "github_issues") {
+      const thread = await id(row.thread_id);
+      if (!(await env.DB.operations.projectThread(thread, project).first()))
+        throw new HttpError(400, "Import the parent thread first.");
+      const url = string(row.issue_url, 2000, "issue URL");
+      if (
+        !/^https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/[1-9][0-9]*$/.test(
+          url,
+        ) ||
+        !Number.isSafeInteger(row.issue_number)
+      )
+        throw new HttpError(400, "Invalid GitHub issue.");
+      const creator = await id(row.created_by, true);
+      if (!await env.DB.operations.userById(creator).first()) throw new HttpError(400, "Import the converter first.");
+      statements.push(
+        env.DB
+          .raw(sql`INSERT INTO thread_github_issues(thread_id,project,repository_name,issue_number,issue_url,created_by,created_at)
+        VALUES(${thread},${project},${string(row.repository_name, 250, "repository")},${Number(row.issue_number)},${url},${creator},${time(row.created_at)}) ON CONFLICT(thread_id) DO NOTHING RETURNING thread_id`),
       );
     } else throw new HttpError(400, "Unknown import table.");
   }

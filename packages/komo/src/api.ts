@@ -49,6 +49,11 @@ function threadList(value: unknown): value is Thread[] {
         typeof t.id === "string" &&
         typeof t.page === "string" &&
         typeof t.resolved === "boolean" &&
+        (t.githubIssue === undefined ||
+          (t.githubIssue &&
+            typeof t.githubIssue.repository === "string" &&
+            /^https:\/\/github\.com\//.test(t.githubIssue.url) &&
+            Number.isSafeInteger(t.githubIssue.number))) &&
         Number.isFinite(t.createdAt) &&
         Number.isFinite(t.updatedAt) &&
         (t.resolvedBy === null || identity(t.resolvedBy)) &&
@@ -124,6 +129,7 @@ function invalidResponse() {
   );
 }
 export class CommentsApi {
+  githubRepository: string | null = null;
   token: string | null = null;
   user: Identity | null = null;
   transient = false;
@@ -136,7 +142,9 @@ export class CommentsApi {
   private cookieName: string;
   private cookieDomain: string;
   constructor(private options: CommentsOptions) {
-    const scope = new URL(options.sessionEndpoint ?? options.endpoint).href.replace(/\/$/, "");
+    const scope = new URL(
+      options.sessionEndpoint ?? options.endpoint,
+    ).href.replace(/\/$/, "");
     const domain = options.sessionDomain?.replace(/^\./, "") ?? "";
     this.cookieDomain =
       domain &&
@@ -147,7 +155,8 @@ export class CommentsApi {
     this.key = `branch-comments:${options.endpoint}:${options.project}`;
     let cookiePresent = false;
     try {
-      const cookie = document.cookie.split("; ")
+      const cookie = document.cookie
+        .split("; ")
         .find((cookie) => cookie.startsWith(`${this.cookieName}=`));
       cookiePresent = cookie !== undefined;
       this.token = cookie?.slice(this.cookieName.length + 1) || null;
@@ -157,9 +166,16 @@ export class CommentsApi {
     try {
       // Account snapshots also contain an endpoint-scoped, previously validated session.
       let known;
-      try { known = JSON.parse(localStorage.getItem(this.userKey) ?? "null"); } catch { /* Ignore corrupt account metadata. */ }
-      const local = localStorage.getItem(this.key) ??
-        (identity(known?.user) && typeof known.token === "string" ? known.token : null);
+      try {
+        known = JSON.parse(localStorage.getItem(this.userKey) ?? "null");
+      } catch {
+        /* Ignore corrupt account metadata. */
+      }
+      const local =
+        localStorage.getItem(this.key) ??
+        (identity(known?.user) && typeof known.token === "string"
+          ? known.token
+          : null);
       if (!cookiePresent) this.token = local;
       else if (!this.token && local) this.clear();
       // Last known account, shown at once; restore() confirms it with /me.
@@ -171,7 +187,9 @@ export class CommentsApi {
     // Retire project-only legacy cookies; only scoped local storage may migrate a session.
     try {
       const name = `bc-session-${encodeURIComponent(options.project)}`;
-      const parent = location.hostname.match(/^[^.]+\.([^.]+\.(?:workers|pages)\.dev)$/)?.[1];
+      const parent = location.hostname.match(
+        /^[^.]+\.([^.]+\.(?:workers|pages)\.dev)$/,
+      )?.[1];
       for (const domain of new Set(["", this.cookieDomain, parent]))
         if (domain !== undefined)
           document.cookie = `${name}=; Max-Age=0; Path=/${domain ? `; Domain=${domain}` : ""}`;
@@ -365,6 +383,7 @@ export class CommentsApi {
     let revision: number | undefined;
     while (offset !== null) {
       type ListResponse = {
+        githubRepository?: string | null;
         threads?: Thread[];
         authors?: Record<string, Identity>;
         next?: number | null;
@@ -387,6 +406,10 @@ export class CommentsApi {
         throw error;
       });
       signal.throwIfAborted();
+      this.githubRepository =
+        typeof result.githubRepository === "string"
+          ? result.githubRepository
+          : null;
       result.threads = expandThreads(
         result.threads,
         result.authors,
@@ -399,7 +422,10 @@ export class CommentsApi {
         return this.cachedThreads;
       if (
         !threadList(result.threads) ||
-        (result.nextCursor != null && (typeof result.nextCursor !== "string" || result.nextCursor.length > 200 || result.nextCursor === cursor)) ||
+        (result.nextCursor != null &&
+          (typeof result.nextCursor !== "string" ||
+            result.nextCursor.length > 200 ||
+            result.nextCursor === cursor)) ||
         (result.revision !== undefined &&
           (!Number.isSafeInteger(result.revision) || result.revision < 0)) ||
         (result.next != null &&
@@ -444,7 +470,9 @@ export class CommentsApi {
       if (this.cookieDomain)
         document.cookie = `${this.cookieName}=; Max-Age=0; ${attributes}`;
       document.cookie = `${this.cookieName}=${value}; Max-Age=${maxAge}; ${attributes}${this.cookieDomain ? `; Domain=${this.cookieDomain}` : ""}`;
-      return document.cookie.split("; ").includes(`${this.cookieName}=${value}`);
+      return document.cookie
+        .split("; ")
+        .includes(`${this.cookieName}=${value}`);
     } catch {
       /* Storage may be unavailable in this browser. */
     }

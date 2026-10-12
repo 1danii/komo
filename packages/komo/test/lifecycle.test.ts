@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { initComments } from "../src/index";
-import type { CommentsController, CommentsOptions } from "../src/types";
+import type { CommentsController, CommentsOptions, Thread } from "../src/types";
 
 let controller: CommentsController | undefined;
 const options: CommentsOptions = {
@@ -33,6 +33,7 @@ beforeEach(() => {
     value: () => [],
   });
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+  vi.spyOn(window, "scrollBy").mockImplementation(() => {});
 });
 afterEach(() => {
   controller?.destroy();
@@ -62,6 +63,89 @@ it("rejects another scope and keeps a replacement safe from stale teardown", () 
   expect(host.isConnected).toBe(true);
   expect(document.body.style.background).toBe("red");
   expect(initComments({ ...options, branch: "next" })).toBe(controller);
+});
+
+it("updates GitHub conversion on an open thread when only connection availability changes", async () => {
+  const { CommentsApi } = await import("../src/api");
+  const config = { ...options, onboarding: undefined };
+  const api = new CommentsApi(config);
+  api.save({
+    token: "github-review",
+    user: { id: "google:owner", name: "Owner", verified: true },
+  });
+  const threads: Thread[] = [
+    {
+      id: "github-review",
+      page: "/",
+      resolved: false,
+      resolvedBy: null,
+      createdAt: 1,
+      updatedAt: 1,
+      anchor: {
+        selector: "body",
+        text: "",
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+        pageX: 0,
+        pageY: 0,
+        viewportWidth: 1200,
+      },
+      comments: [
+        {
+          id: "comment",
+          body: "Review",
+          author: api.user!,
+          createdAt: 1,
+          editedAt: null,
+          reactions: {},
+        },
+      ],
+    },
+  ];
+  let repository: string | null = null;
+  vi.spyOn(CommentsApi.prototype, "restore").mockResolvedValue(undefined);
+  vi.spyOn(CommentsApi.prototype, "request").mockResolvedValue({
+    google: true,
+    guests: true,
+    guestResolve: true,
+  });
+  vi.spyOn(CommentsApi.prototype, "list").mockImplementation(async function () {
+    this.githubRepository = repository;
+    return threads; // The same cached array is returned for unchanged revisions.
+  });
+  controller = initComments(config);
+  controller.open();
+  const shadow = [...document.body.children].find(
+    (node) => node.shadowRoot,
+  )!.shadowRoot!;
+  await vi.waitFor(() =>
+    expect(
+      shadow.querySelector('[aria-label="Open comment by Owner"]'),
+    ).not.toBeNull(),
+  );
+  shadow
+    .querySelector<HTMLButtonElement>('[aria-label="Open comment by Owner"]')!
+    .click();
+  expect(
+    shadow.querySelector('[aria-label="Convert to GitHub issue"]'),
+  ).toBeNull();
+  repository = "owner/repo";
+  window.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() =>
+    expect(
+      shadow.querySelector('[aria-label="Convert to GitHub issue"]'),
+    ).not.toBeNull(),
+  );
+  repository = null;
+  window.dispatchEvent(new Event("focus"));
+  await vi.waitFor(() =>
+    expect(
+      shadow.querySelector('[aria-label="Convert to GitHub issue"]'),
+    ).toBeNull(),
+  );
+  api.clear();
 });
 
 it("rejects unsafe endpoint schemes and embedded credentials before mounting", () => {
@@ -237,9 +321,25 @@ it("uses Floating for boxless content roots even when explicitly configured", ()
   app.style.display = "contents";
   document.body.append(app);
   controller = initComments({ ...options, sidebar: "background" });
-  expect(([...document.body.children].find(node => node.shadowRoot)! as HTMLElement).dataset.sidebar).toBe("edge");
+  expect(
+    (
+      [...document.body.children].find(
+        (node) => node.shadowRoot,
+      )! as HTMLElement
+    ).dataset.sidebar,
+  ).toBe("edge");
   expect(app.style.display).toBe("contents");
   controller.destroy();
-  controller = initComments({ ...options, sidebar: "background", pageRoot: app });
-  expect(([...document.body.children].find(node => node.shadowRoot)! as HTMLElement).dataset.sidebar).toBe("edge");
+  controller = initComments({
+    ...options,
+    sidebar: "background",
+    pageRoot: app,
+  });
+  expect(
+    (
+      [...document.body.children].find(
+        (node) => node.shadowRoot,
+      )! as HTMLElement
+    ).dataset.sidebar,
+  ).toBe("edge");
 });

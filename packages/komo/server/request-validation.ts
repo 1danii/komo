@@ -83,6 +83,10 @@ const requestObject = <Shape extends z.ZodRawShape>(shape: Shape) =>
 
 /** Request schemas preserve existing normalization and defer permission-dependent checks. */
 export const bodySchemas = {
+  githubConnect: requestObject({ install: z.boolean().optional() }),
+  githubProject: requestObject({
+    repositoryId: z.string().regex(/^[1-9][0-9]{0,19}$/),
+  }),
   setupStart: requestObject({
     repo: text(200, "repository"),
     origins: deferred,
@@ -112,6 +116,7 @@ export const bodySchemas = {
     anchor: normalized(anchorValue),
   }),
   threadUpdate: requestObject({ anchor: deferred, resolved: deferred }),
+  githubIssueCreate: requestObject({ title: text(256, "issue title") }),
   reply: requestObject({ body: text(4000, "reply") }),
   commentEdit: requestObject({ body: text(4000, "comment") }),
   reaction: requestObject({

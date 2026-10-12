@@ -5,7 +5,7 @@ import { accountUsage } from "./account-usage.js";
 // One lazy chunk serves every account dialog panel.
 export { accountUsage };
 export { projectManagement } from "./project-management.js";
-import { button, el, icon } from "./dom.js";
+import { button, el, icon, setButtonBusy } from "./dom.js";
 
 export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
   const panel = el("section", "onboarding-panel");
@@ -97,7 +97,7 @@ export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
           if (!result.sites.includes(origin)) result.sites.push(origin);
           renderSites();
           input.value = "";
-          approve.disabled = true;
+          setButtonBusy(approve);
           try {
             await api.request("workspace/sites", "POST", {
               project: options.workspace,
@@ -112,7 +112,7 @@ export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
             if (!input.value) input.value = typed;
             fail(error);
           } finally {
-            approve.disabled = false;
+            setButtonBusy(approve, false);
           }
         },
         "secondary"
@@ -146,7 +146,7 @@ export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
     const join = button(
       "Accept invitation",
       async () => {
-        join.disabled = true;
+        setButtonBusy(join);
         try {
           await api.request("project/join", "POST", { invite: options.invite });
           options.invite = undefined;
@@ -155,7 +155,7 @@ export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
           );
         } catch (error) {
           fail(error);
-          join.disabled = false;
+          setButtonBusy(join, false);
         }
       },
       "primary"
@@ -166,7 +166,7 @@ export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
     const create = button(
       options.code ? "Create project" : "Enable comments",
       async () => {
-        create.disabled = true;
+        setButtonBusy(create);
         const label = create.textContent;
         create.textContent = options.code
           ? "Creating project…"
@@ -195,7 +195,7 @@ export function onboardingPanel(api: CommentsApi, options: OnboardingOptions) {
           }
         } catch (error) {
           fail(error);
-          create.disabled = false;
+          setButtonBusy(create, false);
           create.textContent = label;
         }
       },

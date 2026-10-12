@@ -13,6 +13,11 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 const iconTemplates = new Map<keyof typeof icons, SVGSVGElement>();
+/** Mark a pending button action separately from an unavailable control. */
+export function setButtonBusy(button: HTMLButtonElement, busy = true) {
+  button.toggleAttribute("data-loading", busy);
+  return button.disabled = busy;
+}
 export function icon(name: keyof typeof icons): SVGSVGElement {
   let template = iconTemplates.get(name);
   if (!template) {

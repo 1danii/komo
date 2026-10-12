@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { authenticateSession } from "./auth-sessions";
 import { digest } from "./digest";
 import { importProject } from "./import-project";
+import { githubProjectRoutes } from "./github-project-routes";
 import { projectFactory, type AuthenticatedProjectEnv } from "./komo-context";
 import { privateAccess } from "./project-management";
 import { projectSites, saveProjectSites } from "./project-sites";
@@ -83,6 +84,7 @@ export const projectRoutes = projectFactory
       fixed: [],
     });
   })
+  .route("/github", githubProjectRoutes)
   .patch("/sites", ...validateBody(bodySchemas.projectSites), async (c) => {
     const request = c.req.raw,
       env = c.env,
@@ -196,6 +198,10 @@ export const projectRoutes = projectFactory
       comments: env.DB.operations.exportComments,
       reactions: env.DB.operations.exportReactions,
       users: env.DB.operations.exportUsers,
+      github_issues: (project: string, offset: number) =>
+        env.DB.raw(
+          sql`SELECT thread_id,repository_name,issue_number,issue_url,created_by,created_at FROM thread_github_issues WHERE project=${project} AND issue_url IS NOT NULL ORDER BY thread_id LIMIT 200 OFFSET ${offset}`,
+        ),
     };
     if (!Object.hasOwn(queries, table))
       throw new HttpError(400, "Invalid export table.");
@@ -265,6 +271,10 @@ export const projectRoutes = projectFactory
         "Self-hosted projects must be removed from the Worker configuration. Export or clear resolved comments here.",
       );
     await env.DB.batch([
+      env.DB.raw(sql`DELETE FROM project_github WHERE project=${project}`),
+      env.DB.raw(
+        sql`DELETE FROM github_connect_states WHERE project=${project}`,
+      ),
       env.DB.operations.deleteProjectThreads(project),
       ...env.DB.operations.deleteProjectRecords(project),
       env.DB.operations.deleteWorkspace(project),

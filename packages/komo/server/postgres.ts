@@ -919,10 +919,35 @@ export function postgresDatabase(connectionString: string) {
           await client.query(await readFile(path, "utf8"));
           await client.query("INSERT INTO komo_schema(version) VALUES(1)");
         } else if (
-          versions.rows.length !== 1 ||
-          versions.rows[0].version !== 1
+          !versions.rows.some((row) => row.version === 1) ||
+          versions.rows.some((row) => ![1, 2, 3].includes(row.version))
         ) {
           throw Error("Unsupported PostgreSQL schema version");
+        }
+        if (!versions.rows.some((row) => row.version === 2)) {
+          await client.query(
+            await readFile(
+              fileURLToPath(
+                new URL(
+                  "./postgres/002_github_integration.sql",
+                  import.meta.url,
+                ),
+              ),
+              "utf8",
+            ),
+          );
+          await client.query("INSERT INTO komo_schema(version) VALUES(2)");
+        }
+        if (!versions.rows.some((row) => row.version === 3)) {
+          await client.query(
+            await readFile(
+              fileURLToPath(
+                new URL("./postgres/003_github_issues.sql", import.meta.url),
+              ),
+              "utf8",
+            ),
+          );
+          await client.query("INSERT INTO komo_schema(version) VALUES(3)");
         }
         await client.query("COMMIT");
       } catch (error) {

@@ -2,6 +2,7 @@ import type { Comment, Identity, Thread } from "../src/types.js";
 import type { KomoDatabase } from "./database-adapter";
 import type { CommentRow } from "./thread-records";
 import { HttpError, pagePath, string } from "./validation";
+import { sql } from "drizzle-orm";
 /** List one scoped thread page, retaining revision and compact-author responses. */
 export async function listThreadPage(
   db: KomoDatabase,
@@ -59,6 +60,22 @@ export async function listThreadPage(
   const ids = rows.results.map((row) => row.id);
   if (!ids.length) return { threads: [], next: null, revision };
   const comments = await db.operations.threadComments(ids).execute();
+  const converted = await db
+    .raw<{
+      thread_id: string;
+      issue_url: string;
+      issue_number: number;
+      repository_name: string;
+    }>(
+      sql`SELECT thread_id,issue_url,issue_number,repository_name FROM thread_github_issues WHERE project=${project} AND issue_url IS NOT NULL AND thread_id IN (${sql.join(
+        ids.map((id) => sql`${id}`),
+        sql`,`,
+      )})`,
+    )
+    .execute();
+  const conversions = new Map(
+    converted.results.map((row) => [row.thread_id, row]),
+  );
   const reactions = await db.operations.threadReactions(ids).execute();
   const commentsByThread = new Map<string, CommentRow[]>();
   for (const comment of comments.results) {
@@ -77,6 +94,15 @@ export async function listThreadPage(
     page: pagePath(row.page),
     anchor: JSON.parse(row.anchor),
     resolved: !!row.resolved,
+    ...(conversions.has(row.id)
+      ? {
+          githubIssue: {
+            url: conversions.get(row.id)!.issue_url,
+            number: conversions.get(row.id)!.issue_number,
+            repository: conversions.get(row.id)!.repository_name,
+          },
+        }
+      : {}),
     resolvedBy: row.resolved_by
       ? {
           id: row.resolved_by,

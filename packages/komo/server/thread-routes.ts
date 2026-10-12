@@ -13,6 +13,10 @@ import { bodySchemas, validateBody } from "./request-validation";
 import { listThreadPage } from "./thread-list";
 import { anchorValue, HttpError, string } from "./validation";
 import { retainReviewerComments } from "./workspaces";
+import {
+  githubConversionCapability,
+  convertThreadToGithubIssue,
+} from "./github-issue-conversion";
 type ThreadScopeEnv = ProjectHttpEnv & {
   Variables: { repo: string; branch: string };
 };
@@ -58,9 +62,25 @@ export const threadRoutes = projectFactory
       await next();
     }),
   )
-  .get("/threads", async (c) =>
-    c.json(await listThreadPage(c.env.DB, c.var, new URL(c.req.url))),
-  )
+  .get("/threads", async (c) => {
+    let repository: string | null = null;
+    // Reading threads never requires a valid session; expired tokens just hide conversion.
+    const user = c.req.header("Authorization")
+      ? await authenticateSession(c.req.raw, c.env, c.var.project).catch(
+          () => null,
+        )
+      : null;
+    if (user)
+      ({ repository } = await githubConversionCapability(
+        c.env,
+        c.var.project,
+        user,
+      ));
+    return c.json({
+      ...(await listThreadPage(c.env.DB, c.var, new URL(c.req.url))),
+      githubRepository: repository,
+    });
+  })
   .use(
     "*",
     createMiddleware<ThreadWriteEnv>(async (c, next) => {
@@ -74,6 +94,21 @@ export const threadRoutes = projectFactory
       c.set("now", now);
       await next();
     }),
+  )
+  .post(
+    "/threads/:threadId/github-issue",
+    ...validateBody(bodySchemas.githubIssueCreate),
+    async (c) =>
+      c.json(
+        await convertThreadToGithubIssue(
+          c.env,
+          c.var,
+          c.var.user,
+          c.req.param("threadId"),
+          c.req.valid("json").title,
+          c.var.origin,
+        ),
+      ),
   )
   .post("/threads", ...validateBody(bodySchemas.threadCreate), async (c) => {
     const env = c.env;

@@ -33,6 +33,8 @@ export const resolveProject = projectFactory.createMiddleware(
             "/project/export",
             "/project/import",
             "/project/clear-resolved",
+            "/project/github",
+            "/project/github/connect",
             "/owner/claim",
             "/config",
             "/me",

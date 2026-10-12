@@ -1,6 +1,7 @@
 import type { CommentsApi } from "./api.js";
 import { selectionMenu } from "./action-menu.js";
-import { button, el, icon } from "./dom.js";
+import { button, el, icon, setButtonBusy } from "./dom.js";
+import type { OnboardingOptions } from "./types.js";
 
 type ProjectDetails = {
   project: string;
@@ -12,7 +13,8 @@ type ProjectDetails = {
 export function projectManagement(
   api: CommentsApi,
   workspace?: string,
-  onChange?: (deleted: boolean) => void
+  onChange?: (deleted: boolean) => void,
+  integrations?: OnboardingOptions["integrations"],
 ) {
   const panel = el("section", "account-sites project-management");
   panel.dataset.open = "false";
@@ -25,7 +27,7 @@ export function projectManagement(
       reveal.inert = !open;
       reveal.setAttribute("aria-hidden", String(!open));
     },
-    "account-sites-summary"
+    "account-sites-summary",
   );
   summary.append(icon("chevron"));
   summary.setAttribute("aria-expanded", "false");
@@ -47,7 +49,9 @@ export function projectManagement(
   panel.append(summary, reveal);
   const action = async (work: () => Promise<void>) => {
     const buttons = Array.from(panel.querySelectorAll("button"));
-    buttons.forEach((b) => (b.disabled = true));
+    buttons.forEach((b) => {
+      setButtonBusy(b);
+    });
     status.textContent = "";
     try {
       await work();
@@ -55,7 +59,9 @@ export function projectManagement(
       status.textContent =
         error instanceof Error ? error.message : "Try again.";
     } finally {
-      buttons.forEach((b) => (b.disabled = false));
+      buttons.forEach((b) => {
+        setButtonBusy(b, false);
+      });
     }
   };
   const download = async () => {
@@ -73,13 +79,19 @@ export function projectManagement(
       tables: {},
     };
     let revision: number | undefined;
-    for (const table of ["threads", "comments", "reactions", "users"]) {
+    for (const table of [
+      "threads",
+      "comments",
+      "reactions",
+      "users",
+      "github_issues",
+    ]) {
       snapshot.tables[table] = [];
       let offset: number | null = 0;
       while (offset !== null) {
         const page: { rows: unknown[]; next: number | null; revision: number } =
           await api.request(
-            `project/export?table=${table}&offset=${offset}${revision === undefined ? "" : `&revision=${revision}`}${workspace ? `&workspace=${encodeURIComponent(workspace)}` : ""}`
+            `project/export?table=${table}&offset=${offset}${revision === undefined ? "" : `&revision=${revision}`}${workspace ? `&workspace=${encodeURIComponent(workspace)}` : ""}`,
           );
         revision = page.revision;
         snapshot.tables[table].push(...page.rows);
@@ -89,7 +101,7 @@ export function projectManagement(
     const url = URL.createObjectURL(
       new Blob([JSON.stringify(snapshot, null, 2)], {
         type: "application/json",
-      })
+      }),
     );
     const link = el("a");
     link.href = url;
@@ -128,7 +140,7 @@ export function projectManagement(
               drawAccess();
               throw error;
             }
-          })
+          }),
       );
       if (access) access.replaceWith(next);
       else accessLabel.append(next);
@@ -136,6 +148,7 @@ export function projectManagement(
     };
     drawAccess();
     content.append(accessLabel);
+    if (integrations) content.append(integrations(request));
     const emailLabel = el("label", "account-name-label", "Invite someone");
     const email = el("input");
     email.type = "email";
@@ -160,7 +173,7 @@ export function projectManagement(
           copy.hidden = false;
           status.textContent = "Share this link. It expires in 7 days.";
         }),
-      "secondary"
+      "secondary",
     );
     const copy = button(
       "Copy invitation",
@@ -169,7 +182,7 @@ export function projectManagement(
           await navigator.clipboard.writeText(share.value);
           status.textContent = "Invitation copied.";
         }),
-      "secondary"
+      "secondary",
     );
     copy.hidden = true;
     content.append(emailLabel, invite, share, copy);
@@ -185,8 +198,8 @@ export function projectManagement(
               await load();
               status.textContent = "Member removed.";
             }),
-          "secondary"
-        )
+          "secondary",
+        ),
       );
       content.append(row);
     }
@@ -202,13 +215,13 @@ export function projectManagement(
               await load();
               status.textContent = "Invitation revoked.";
             }),
-          "secondary"
-        )
+          "secondary",
+        ),
       );
       content.append(row);
     }
     content.append(
-      button("Download comments", () => void action(download), "secondary")
+      button("Download comments", () => void action(download), "secondary"),
     );
     const migration = el("a", "project-help", "Move to self-hosting");
     migration.href = "https://komo.offbr.co/hosting/#migration";
@@ -221,8 +234,8 @@ export function projectManagement(
       el(
         "p",
         "",
-        `Export first. These actions permanently remove comments. Type ${details.project} to confirm.`
-      )
+        `Export first. These actions permanently remove comments. Type ${details.project} to confirm.`,
+      ),
     );
     const confirm = el("input");
     confirm.placeholder = details.project;
@@ -240,8 +253,8 @@ export function projectManagement(
             status.textContent = "Resolved threads deleted.";
             confirm.value = "";
           }),
-        "secondary destructive"
-      )
+        "secondary destructive",
+      ),
     );
     if (details.hosted)
       danger.append(
@@ -255,8 +268,8 @@ export function projectManagement(
               status.textContent =
                 "Project deleted. Its project slot is available again.";
             }),
-          "secondary destructive"
-        )
+          "secondary destructive",
+        ),
       );
     content.append(danger);
   };

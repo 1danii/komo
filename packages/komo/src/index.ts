@@ -7,6 +7,11 @@ import {
 import { resolveConfig, type KomoConfig } from "./config.js";
 export type { KomoConfig } from "./config.js";
 import { adaptivePolling } from "./polling.js";
+import {
+  showConfirmationPopover,
+  confirmationPopover,
+} from "./confirmation-popover.js";
+import { githubIssueAction } from "./github-issue-dialog.js";
 import { pinDirection } from "./pin-direction.js";
 import { pinStacks } from "./pin-stacks.js";
 import { OptimisticQueue } from "./optimistic.js";
@@ -66,6 +71,7 @@ import {
   icon,
   icons,
   initials,
+  setButtonBusy,
 } from "./dom.js";
 import { styles } from "./styles.js";
 import type {
@@ -1315,6 +1321,7 @@ export function initComments(options: CommentsOptions): CommentsController {
   let polling: ReturnType<typeof adaptivePolling> | undefined;
   let lastRefresh: Thread[] | undefined;
   let lastRefreshRevision = -1;
+  let lastGithubRepository: string | null = null;
   async function refresh() {
     if (destroyed || refreshing || optimistic.busy || options.onboarding)
       return;
@@ -1334,13 +1341,15 @@ export function initComments(options: CommentsOptions): CommentsController {
         revision !== optimistic.revision
       )
         return;
+      const githubChanged = lastGithubRepository !== client.githubRepository;
       if (
-        response === lastRefresh &&
+        !githubChanged && response === lastRefresh &&
         revision === lastRefreshRevision &&
         connection === "Live"
       )
         return false;
       lastRefresh = response;
+      lastGithubRepository = client.githubRepository;
       lastRefreshRevision = revision;
       knownThreads = true;
       const next = visibleThreads(response);
@@ -1356,6 +1365,7 @@ export function initComments(options: CommentsOptions): CommentsController {
         renderList();
         renderToolbar();
       }
+      if (!changed && githubChanged && selected && !account) renderDialog();
       return changed;
     } catch (reason) {
       if (
@@ -1435,16 +1445,37 @@ export function initComments(options: CommentsOptions): CommentsController {
   let appliedViewport = "";
   const mobileViewportBottom = () =>
     (window.visualViewport?.offsetTop ?? 0) +
-    Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight) -
+    Math.min(
+      window.innerHeight,
+      window.visualViewport?.height ?? window.innerHeight,
+    ) -
     window.innerHeight;
   function setMobilePanelOrigin() {
-    const panelHeight = Math.max(1, Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight) * 0.9);
+    const panelHeight = Math.max(
+      1,
+      Math.min(
+        window.innerHeight,
+        window.visualViewport?.height ?? window.innerHeight,
+      ) * 0.9,
+    );
     const bottom = mobileViewportBottom();
     const pill = drawerShell().getBoundingClientRect();
-    host.style.setProperty("--mobile-pill-x", `${pill.left + pill.width / 2 - window.innerWidth / 2}px`);
-    host.style.setProperty("--mobile-pill-y", `${pill.bottom - (window.innerHeight + bottom - 6)}px`);
-    host.style.setProperty("--mobile-pill-scale-x", String(Math.max(0.01, pill.width / Math.max(1, window.innerWidth - 24))));
-    host.style.setProperty("--mobile-pill-scale-y", String(Math.max(0.01, pill.height / panelHeight)));
+    host.style.setProperty(
+      "--mobile-pill-x",
+      `${pill.left + pill.width / 2 - window.innerWidth / 2}px`,
+    );
+    host.style.setProperty(
+      "--mobile-pill-y",
+      `${pill.bottom - (window.innerHeight + bottom - 6)}px`,
+    );
+    host.style.setProperty(
+      "--mobile-pill-scale-x",
+      String(Math.max(0.01, pill.width / Math.max(1, window.innerWidth - 24))),
+    );
+    host.style.setProperty(
+      "--mobile-pill-scale-y",
+      String(Math.max(0.01, pill.height / panelHeight)),
+    );
   }
   function scalePage() {
     const zoom = htmlZoom();
@@ -1487,7 +1518,10 @@ export function initComments(options: CommentsOptions): CommentsController {
       if (compactSidebar) {
         const bottom = mobileViewportBottom();
         toolbar.style.translate = `0 ${bottom}px`;
-        host.style.setProperty("--mobile-panel-height", `${Math.max(1, viewportHeight * 0.9)}px`);
+        host.style.setProperty(
+          "--mobile-panel-height",
+          `${Math.max(1, viewportHeight * 0.9)}px`,
+        );
         host.style.setProperty("--mobile-panel-bottom", `${-bottom}px`);
       }
       host.classList.toggle("review-open", expanded);
@@ -1976,7 +2010,11 @@ export function initComments(options: CommentsOptions): CommentsController {
     if (compactSidebar) {
       cancelAnimationFrame(mobileEnterFrame);
       setMobilePanelOrigin();
-      if (opening && !restoring && !matchMedia("(prefers-reduced-motion: reduce)").matches)
+      if (
+        opening &&
+        !restoring &&
+        !matchMedia("(prefers-reduced-motion: reduce)").matches
+      )
         host.dataset.mobileEntering = "";
       else delete host.dataset.mobileEntering;
       hidden = false;
@@ -2079,13 +2117,20 @@ export function initComments(options: CommentsOptions): CommentsController {
     if (!openingPreview && (fromMobileSidebar || !compactSidebar))
       (framed ? surface : window).scrollBy({
         top:
-          (rect.y - (fromMobileSidebar
-            ? Math.min(window.innerHeight, window.visualViewport?.height ?? window.innerHeight)
-            : window.innerHeight) * 0.35) /
+          (rect.y -
+            (fromMobileSidebar
+              ? Math.min(
+                  window.innerHeight,
+                  window.visualViewport?.height ?? window.innerHeight,
+                )
+              : window.innerHeight) *
+              0.35) /
           (framed ? appliedScale * htmlZoom() : 1),
-        behavior: fromMobileSidebar && !matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "smooth"
-          : "instant",
+        behavior:
+          fromMobileSidebar &&
+          !matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? "smooth"
+            : "instant",
       });
     render();
   }
@@ -2409,10 +2454,7 @@ export function initComments(options: CommentsOptions): CommentsController {
         pinPreview.append(open);
         pinPreview.hidden = false;
         const point = indicatorPoint(pin, rect);
-        const right =
-          expanded && !compactSidebar
-            ? 396
-            : 12;
+        const right = expanded && !compactSidebar ? 396 : 12;
         const left =
           point.x + 20 + 320 > window.innerWidth - right
             ? point.x - 340
@@ -2613,25 +2655,15 @@ export function initComments(options: CommentsOptions): CommentsController {
       .filter((thread) => thread.resolved)
       .map((thread) => thread.id);
     if (!ids.length) return;
-    const prompt = el("div", "cleanup-confirm");
-    prompt.popover = "auto";
+    const { prompt, actions, close } = confirmationPopover(
+      trigger,
+      `Delete ${ids.length} resolved ${ids.length === 1 ? "thread" : "threads"}?`,
+    );
     prompt.setAttribute("role", "alertdialog");
-    prompt.setAttribute("aria-label", "Delete resolved comments permanently");
     prompt.append(
-      el(
-        "strong",
-        "",
-        `Delete ${ids.length} resolved ${ids.length === 1 ? "thread" : "threads"}?`,
-      ),
       el("p", "", "Their replies will be deleted too. This can’t be undone."),
     );
-    const actions = el("div", "cleanup-actions");
-    const close = () => {
-      prompt.hidePopover();
-      trigger.focus({ preventScroll: true });
-    };
     actions.append(
-      button("Cancel", close, "secondary"),
       button(
         "Delete permanently",
         () => {
@@ -2661,16 +2693,13 @@ export function initComments(options: CommentsOptions): CommentsController {
     );
     prompt.append(actions);
     sidebar.append(prompt);
-    prompt.addEventListener("toggle", () => {
-      if (!prompt.matches(":popover-open")) prompt.remove();
-    });
-    prompt.showPopover();
-    const rect = trigger.getBoundingClientRect();
-    prompt.style.left = `${Math.max(12, Math.min(rect.right - prompt.offsetWidth, innerWidth - prompt.offsetWidth - 12))}px`;
-    prompt.style.top = `${Math.max(12, Math.min(rect.bottom + 8, innerHeight - prompt.offsetHeight - 12))}px`;
+    showConfirmationPopover(prompt, trigger);
     actions.querySelector<HTMLButtonElement>("button")?.focus();
   }
-  const canResolve = () => !pending && (guestResolve || !!api.user?.verified);
+  function updateResolveButton(button: HTMLButtonElement) {
+    setButtonBusy(button, pending);
+    button.disabled ||= !(guestResolve || api.user?.verified);
+  }
   function toggleResolved(
     thread: Thread,
     noticeAnchor?: ReturnType<typeof captureNoticePosition>,
@@ -3049,8 +3078,9 @@ export function initComments(options: CommentsOptions): CommentsController {
         cached
           .querySelector(".thread-card")!
           .classList.toggle("active", selected === thread.id);
-        cached.querySelector<HTMLButtonElement>(".card-resolve")!.disabled =
-          !canResolve();
+        updateResolveButton(
+          cached.querySelector<HTMLButtonElement>(".card-resolve")!,
+        );
         cached.querySelector("small")!.textContent = age(first.createdAt);
         cached.querySelectorAll(".reply-meta").forEach((node, index) => {
           const reply = thread.comments[index + 1];
@@ -3080,7 +3110,9 @@ export function initComments(options: CommentsOptions): CommentsController {
           "span",
           "",
           thread.resolved
-            ? "Resolved"
+            ? thread.githubIssue
+              ? "Continues in GitHub"
+              : "Resolved"
             : thread.comments.length > 1
               ? `${thread.comments.length - 1} ${thread.comments.length === 2 ? "reply" : "replies"}`
               : "",
@@ -3095,7 +3127,7 @@ export function initComments(options: CommentsOptions): CommentsController {
         "icon card-resolve",
         "check",
       );
-      quickResolve.disabled = !canResolve();
+      updateResolveButton(quickResolve);
       item.append(card, quickResolve);
       if (thread.comments.length > 1) {
         const replies = el("div", "sidebar-replies");
@@ -3348,7 +3380,7 @@ export function initComments(options: CommentsOptions): CommentsController {
         },
         "primary",
       );
-      save.disabled = pending;
+      setButtonBusy(save, pending);
       item.append(
         input,
         save,
@@ -3880,8 +3912,10 @@ export function initComments(options: CommentsOptions): CommentsController {
         "icon",
         "check",
       );
-      resolve.disabled = !canResolve();
+      updateResolveButton(resolve);
       controls.append(resolve);
+      if (!thread.resolved && !thread.githubIssue && api.user?.verified)
+        githubIssueAction(api, thread, controls, refresh);
     }
     controls.append(
       button(
@@ -4034,6 +4068,7 @@ export function initComments(options: CommentsOptions): CommentsController {
                       void refresh().catch(() => {});
                     }
                   },
+                  options.onboarding?.integrations,
                 ),
               );
           });
@@ -4195,6 +4230,19 @@ export function initComments(options: CommentsOptions): CommentsController {
       for (const comment of thread.comments)
         messages.append(renderMessage(comment, thread));
       dialog.append(messages);
+      if (thread.githubIssue) {
+        const callout = el("p", "account-usage-note github-issue-link", "Continues in ");
+        const link = el(
+          "a",
+          "project-help",
+          `${thread.githubIssue.repository}#${thread.githubIssue.number}`,
+        );
+        link.href = thread.githubIssue.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        callout.append(link);
+        dialog.append(callout);
+      }
       dialog.append(composer(thread));
     } else
       dialog.append(el("div", "empty", "This comment is no longer available."));
@@ -4421,10 +4469,7 @@ export function initComments(options: CommentsOptions): CommentsController {
       x = pin.x + 20;
       y = pin.y - 28;
     }
-    const right =
-      expanded && !compactSidebar
-        ? 396
-        : 12;
+    const right = expanded && !compactSidebar ? 396 : 12;
     if (pin && x + dialog.offsetWidth > window.innerWidth - right)
       x = pin.x - dialog.offsetWidth - 20;
     cardFollow.place(
@@ -4806,8 +4851,12 @@ export function initComments(options: CommentsOptions): CommentsController {
       hidePreview();
       const target = event.target;
       // Sidebar and comment text scrolling do not move the page anchors.
-      if (target === host || !target ||
-        (target instanceof Node && target.getRootNode() === shadow)) return;
+      if (
+        target === host ||
+        !target ||
+        (target instanceof Node && target.getRootNode() === shadow)
+      )
+        return;
       const scroller = target === document ? document.scrollingElement : target;
       if (!(scroller instanceof Element)) return;
       if (!movingThread) {
@@ -4831,9 +4880,13 @@ export function initComments(options: CommentsOptions): CommentsController {
     },
   );
   for (const type of ["focusin", "focusout"])
-    dialogs.addEventListener(type, () => requestAnimationFrame(positionDialog), {
-      signal: abort.signal,
-    });
+    dialogs.addEventListener(
+      type,
+      () => requestAnimationFrame(positionDialog),
+      {
+        signal: abort.signal,
+      },
+    );
   window.visualViewport?.addEventListener(
     "scroll",
     () => {

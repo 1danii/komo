@@ -44,7 +44,11 @@
     "server/project-management.ts",
     "server/import-project.ts",
     "server/digest.ts",
-    "server/project-sites.ts"
+    "server/project-sites.ts",
+    "server/github-app-client.ts",
+    "server/github-connect-routes.ts",
+    "server/github-project-routes.ts",
+    "server/github-issue-conversion.ts"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

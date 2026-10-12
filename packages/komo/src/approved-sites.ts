@@ -1,5 +1,5 @@
 import type { CommentsApi } from "./api.js";
-import { button, el, icon } from "./dom.js";
+import { button, el, icon, setButtonBusy } from "./dom.js";
 
 type SiteList = { sites: string[]; fixed: string[] };
 
@@ -124,9 +124,9 @@ export async function approvedSites(
       }
       const typed = input.value;
       input.value = "";
-      add.disabled = true;
+      setButtonBusy(add);
       if (!(await save([...sites, site]))) input.value ||= typed;
-      add.disabled = false;
+      setButtonBusy(add, false);
       input.focus();
     },
     "secondary"

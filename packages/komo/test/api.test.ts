@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { createServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Thread } from "../src/types";
+import { startPostgresApiFixture } from './postgres-api-fixture';
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 let directory = "",
@@ -15,6 +16,9 @@ let directory = "",
   port = 0,
   output = "";
 const origin = "http://localhost:4321";
+const postgresConnection = process.env.KOMO_TEST_API_DATABASE === 'postgres'
+  ? process.env.KOMO_TEST_POSTGRES_URL : undefined;
+let disposePostgres: (()=>Promise<void>) | undefined;
 const anchor = {
   selector: "#hero",
   text: "Workers",
@@ -123,7 +127,7 @@ beforeAll(async () => {
   ];
   const configPath = join(directory, "wrangler.json");
   await writeFile(configPath, JSON.stringify(config));
-  await promisify(execFile)(
+  if (!postgresConnection) await promisify(execFile)(
     "pnpm",
     [
       "exec",
@@ -146,9 +150,8 @@ beforeAll(async () => {
     seed,
     `
     INSERT INTO users(id,name,verified) VALUES('google:fixture','Owner',1),('guest:fixture','Guest',0);
-    WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<65)
     INSERT INTO threads(id,project,repo,branch,page,anchor,created_at,updated_at)
-    SELECT printf('import:%03d',i),'test','owner/site','pagination','/','${JSON.stringify(anchor)}',100,100 FROM n;
+    VALUES ${Array.from({length:65},(_,i)=>`('import:${String(i+1).padStart(3,'0')}','test','owner/site','pagination','/','${JSON.stringify(anchor)}',100,100)`).join(',')};
     INSERT INTO project_owners(project,user_id) VALUES('owned','google:fixture');
     INSERT INTO project_members(project,user_id) VALUES('other','google:fixture'),('removed-project','google:fixture');
     INSERT INTO users(id,name,verified) VALUES('google:usage','Usage owner',1);
@@ -176,6 +179,11 @@ beforeAll(async () => {
       ('${h("guest-claim-token")}','guest:fixture','unclaimed',9999999999999);
   `
   );
+  if (postgresConnection) {
+    const fixture=await startPostgresApiFixture({connection:postgresConnection,directory,seed:await readFile(seed,'utf8'),vars:config.vars,port,workerPath:config.main});
+    worker=fixture.process;
+    disposePostgres=fixture.dispose;
+  } else {
   await promisify(execFile)(
     "pnpm",
     [
@@ -209,13 +217,14 @@ beforeAll(async () => {
     ],
     { cwd: root, stdio: ["ignore", "pipe", "pipe"], detached: true }
   );
+  }
   worker.stdout?.on("data", (chunk) => (output += String(chunk)));
   worker.stderr?.on("data", (chunk) => (output += String(chunk)));
   for (let i = 0; i < 100; i++) {
     try {
       if ((await fetch(`http://localhost:${port}/health`)).ok) return;
     } catch {
-      /* Wait for workerd. */
+      /* Wait for the API server. */
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -230,6 +239,7 @@ afterAll(async () => {
     }
   }
   if (directory) await rm(directory, { recursive: true, force: true });
+  await disposePostgres?.();
 });
 it("connects from the intended site with a one-use Google handoff and project-scoped session", async () => {
   const site = "https://new-site.example";
